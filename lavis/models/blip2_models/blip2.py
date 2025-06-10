@@ -205,16 +205,33 @@ class Blip2Base(BaseModel):
     @classmethod
     def init_Qformer(cls, num_query_token, vision_width, cross_attention_freq=2, memory_bank_length=0, num_frames=0):
         encoder_config = BertConfig.from_pretrained("bert-base-uncased")
+        encoder_config.hidden_size = 768
+        #encoder_config.hidden_size = 2048 -> OOM error 발생
+        # attention head 16개
+        encoder_config.num_attention_heads = 16
         encoder_config.encoder_width = vision_width
         # insert cross-attention layer every other block
         encoder_config.add_cross_attention = True
         encoder_config.cross_attention_freq = cross_attention_freq
         encoder_config.query_length = num_query_token
         encoder_config.memory_bank_length = memory_bank_length
-        Qformer = BertLMHeadModel.from_pretrained(
-            "bert-base-uncased", config=encoder_config
-        )
+
+        # ================== [디버깅 코드 1] ==================
+        #print(f"[디버깅 1] Qformer 생성 전, hidden_size: {encoder_config.hidden_size}")
+        # ====================================================
+
+        Qformer = BertLMHeadModel(config=encoder_config)
+
+        # ================== [디버깅 코드 2] ==================
+        #print(f"[디버깅 2] Qformer 생성 후, hidden_size: {encoder_config.hidden_size}")
+        # ====================================================
+
         Qformer.bert = apply_memory_bank(Qformer.bert, memory_bank_length, num_frames)
+
+        # ================== [디버깅 코드 3] ==================
+        #print(f"[디버깅 3] query_tokens 생성 직전, hidden_size: {encoder_config.hidden_size}")
+        # ====================================================
+
         query_tokens = nn.Parameter(
             torch.zeros(1, num_query_token, encoder_config.hidden_size)
         )

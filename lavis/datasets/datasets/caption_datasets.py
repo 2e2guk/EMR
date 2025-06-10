@@ -6,6 +6,7 @@
 """
 
 import os
+import json
 from collections import OrderedDict
 
 from lavis.datasets.datasets.base_dataset import BaseDataset
@@ -81,4 +82,37 @@ class CaptionEvalDataset(BaseDataset, __DisplMixin):
             "image": image,
             "image_id": ann["image_id"],
             "instance_id": ann["instance_id"],
+        }
+class ConceptualCaption3MDataset(BaseDataset):
+    def __init__(self, vis_processor, text_processor, vis_root, ann_paths, **kwargs):
+        """
+        Conceptual Captions 3M Dataset
+
+        Args:
+            vis_processor: 이미지 전처리기
+            text_processor: 텍스트 전처리기
+            vis_root (str): 이미지 디렉토리
+            ann_paths (List[str]): 어노테이션 json 경로들
+        """
+        self.annotation = []
+
+        for ann_path in ann_paths:
+            with open(ann_path, "r") as f:
+                self.annotation += json.load(f)
+
+        self.vis_root = vis_root
+        self.vis_processor = vis_processor
+        self.text_processor = text_processor
+
+    def __len__(self):
+        return len(self.annotation)
+
+    def __getitem__(self, index):
+        ann = self.annotation[index]
+        image_path = os.path.join(self.vis_root, ann["image"])
+        image = self.vis_processor(image_path)
+        caption = self.text_processor(ann["caption"])
+        return {
+            "image": image,
+            "text_input": caption,
         }

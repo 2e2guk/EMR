@@ -1,0 +1,58 @@
+run_cfg:
+  task: image_text_pretrain
+  name: vlp_cc3m
+  save_dir: output/vlp_cc3m
+  output_dir: output/vlp_cc3m
+  log_dir: output/vlp_cc3m/logs
+
+  num_beams: 1
+  seed: 42
+  amp: true
+  resume_ckpt_path: null
+
+  max_epoch: 5
+  batch_size_train: 1
+  batch_size_eval: 32
+  num_workers: 4
+  accum_grad_iters: 32
+  evaluate: false
+  device: "cuda"
+  distributed: false
+
+  init_lr: 5e-5
+  num_training_steps: 50000
+  num_warmup_steps: 1000
+  min_lr: 0.0
+  max_lr: 5e-5
+  weight_decay: 0.05
+  max_grad_norm: 5.0
+
+  logging_freq_step: 10
+  eval_freq_epoch: 1
+  save_ckpt_freq: 1
+
+  lr_sched: cosine
+  optimizer: adamw
+
+datasets:
+  cc3m_malmm:
+    build_info:
+      annotations:
+        train:
+          # 실제 학습용 JSON 파일 경로
+          storage: /home/leegw/EMR_2/MA-LMM/lavis/conceptual-captions/DownloadConceptualCaptions/cc3m_malmm_train.json
+      images:
+        train:
+          # 실제 이미지 폴더 경로
+          storage: /home/leegw/EMR_2/MA-LMM/lavis/conceptual-captions/DownloadConceptualCaptions/cc3m_images
+      preprocess:
+        vis_processor:
+          train:
+            name: "blip_image_train"
+            image_size: 224
+        text_processor:
+          train:
+            name: "blip_caption"
+
+model:
+  arch: blip2_llama_instruct_malmm

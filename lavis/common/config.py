@@ -467,3 +467,24 @@ def create_runner_config_validator():
     )
 
     return validator
+
+from omegaconf import OmegaConf
+import argparse
+
+def parse_cfg():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cfg-path", default=None, help="path to configuration file.")
+    parser.add_argument(
+        "opts",
+        default=None,
+        nargs=argparse.REMAINDER,
+        help="Modify config options from command line.",
+    )
+
+    args = parser.parse_args()
+    cfg = OmegaConf.load(args.cfg_path)
+
+    if args.opts:
+        cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(args.opts))
+
+    return cfg

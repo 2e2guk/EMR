@@ -29,13 +29,11 @@ class ImageTextPairDataset(BaseDataset, __DisplMixin):
     def __init__(self, vis_processor, text_processor, vis_root, ann_paths):
         """
         vis_root (string): Root directory of images (e.g. coco/images/)
-        ann_root (string): directory to store the annotation file
+        ann_paths (string or list): annotation JSON file(s)
         """
         super().__init__(vis_processor, text_processor, vis_root, ann_paths)
 
     def __getitem__(self, index):
-
-        # TODO this assumes image input, not general enough
         ann = self.annotation[index]
 
         image_path = os.path.join(self.vis_root, ann["image"])
@@ -45,3 +43,9 @@ class ImageTextPairDataset(BaseDataset, __DisplMixin):
         caption = self.text_processor(ann["caption"])
 
         return {"image": image, "text_input": caption}
+
+
+# 추가
+DATASET_MAPPING = {
+    "cc3m_malmm": ImageTextPairDataset,
+}

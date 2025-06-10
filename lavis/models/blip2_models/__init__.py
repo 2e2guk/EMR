@@ -1,0 +1,1 @@
+from lavis.models.blip2_models.blip2_llama_instruct_malmm import Blip2LlamaInstruct_MALMM

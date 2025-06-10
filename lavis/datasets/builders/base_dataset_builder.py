@@ -110,12 +110,18 @@ class BaseDatasetBuilder:
         for split in splits:
             info = anns[split]
 
-            urls, storage_paths = info.get("url", None), info.storage
+            urls = info.get("url", None)
+            storage_paths = info.storage
+
+            if isinstance(storage_paths, str):
+                storage_paths = [storage_paths]
+
+            if urls is None:
+                # skip downloading annotation files, assume they already exist at storage_paths
+                return
 
             if isinstance(urls, str):
                 urls = [urls]
-            if isinstance(storage_paths, str):
-                storage_paths = [storage_paths]
 
             assert len(urls) == len(storage_paths)
 

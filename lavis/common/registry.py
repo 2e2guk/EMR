@@ -325,5 +325,17 @@ class Registry:
         """
         return cls.mapping["state"].pop(name, None)
 
+    # 추가
+    @classmethod
+    def get_datasets(cls, dataset_cfg):
+        datasets = {}
+        for name, builder_cfg in dataset_cfg.items():
+            builder_class = cls.get_builder_class(name)
+            if builder_class is None:
+                raise ValueError(f"No dataset builder registered under name '{name}'")
+            #builder = builder_class(**builder_cfg.get("build_info", {}))
+            builder = builder_class(builder_cfg)
+            datasets[name] = builder.build_datasets()
+        return datasets
 
 registry = Registry()

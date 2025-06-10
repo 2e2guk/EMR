@@ -291,3 +291,15 @@ class VATEXCapBuilder(BaseDatasetBuilder):
     DATASET_CONFIG_DICT = {
         "default": "configs/datasets/vatex/defaults_cap.yaml",
     }
+
+from lavis.datasets.datasets.caption_datasets import ConceptualCaption3MDataset
+
+
+@registry.register_builder("cc3m_caption")
+class ConceptualCaption3MBuilder(BaseDatasetBuilder):
+    train_dataset_cls = ConceptualCaption3MDataset
+    eval_dataset_cls = ConceptualCaption3MDataset  # 보통 pretraining엔 eval 필요 없음
+
+    DATASET_CONFIG_DICT = {
+        "default": "configs/datasets/cc3m/defaults.yaml",
+    }

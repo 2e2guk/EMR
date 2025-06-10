@@ -156,16 +156,20 @@ class RunnerBase:
             # optional parameters
             decay_rate = self.config.run_cfg.get("lr_decay_rate", None)
             warmup_start_lr = self.config.run_cfg.get("warmup_lr", -1)
-            warmup_steps = self.config.run_cfg.get("warmup_steps", 0)
+            #warmup_steps = self.config.run_cfg.get("warmup_steps", 0)
+
+            num_training_steps = self.config.run_cfg.get("num_training_steps", 50000)
+            num_warmup_steps = self.config.run_cfg.get("num_warmup_steps", 1000)
 
             self._lr_sched = lr_sched_cls(
-                optimizer=self.optimizer,
+                self.optimizer,
+                num_warmup_steps,
+                num_training_steps,
                 max_epoch=max_epoch,
                 min_lr=min_lr,
                 init_lr=init_lr,
                 decay_rate=decay_rate,
                 warmup_start_lr=warmup_start_lr,
-                warmup_steps=warmup_steps,
             )
 
         return self._lr_sched
@@ -362,7 +366,8 @@ class RunnerBase:
         self.output_dir = output_dir
 
         with open(os.path.join(output_dir, 'config.yaml'), 'w') as fp:
-            fp.write(OmegaConf.to_yaml(self.config.config))
+            #fp.write(OmegaConf.to_yaml(self.config.config))
+            fp.write(OmegaConf.to_yaml(self.config))
 
     def train(self):
         start_time = time.time()
@@ -420,7 +425,8 @@ class RunnerBase:
             if self.evaluate_only:
                 break
 
-            dist.barrier()
+            if self.config.run_cfg.distributed:
+                dist.barrier()
 
         # testing phase
         test_epoch = "best" if len(self.valid_splits) > 0 else cur_epoch
@@ -595,7 +601,7 @@ class RunnerBase:
         save_obj = {
             "model": state_dict,
             "optimizer": self.optimizer.state_dict(),
-            "config": self.config.to_dict(),
+            "config": self.config,
             "scaler": self.scaler.state_dict() if self.scaler else None,
             "epoch": cur_epoch,
         }
@@ -636,7 +642,7 @@ class RunnerBase:
             )
             checkpoint = torch.load(cached_file, map_location=self.device)
         elif os.path.isfile(url_or_filename):
-            checkpoint = torch.load(url_or_filename, map_location=self.device)
+            checkpoint = torch.load(url_or_filename, map_location=self.device, weights_only=False)
         else:
             # raise RuntimeError("checkpoint url or path is invalid")
             return
@@ -663,4 +669,5 @@ class RunnerBase:
     @main_process
     def log_config(self):
         with open(os.path.join(self.output_dir, "log.txt"), "a") as f:
-            f.write(json.dumps(self.config.to_dict(), indent=4) + "\n")
+            #f.write(json.dumps(self.config.to_dict(), indent=4) + "\n")
+            f.write(json.dumps(OmegaConf.to_container(self.config), indent=4) + "\n")

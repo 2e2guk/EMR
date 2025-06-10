@@ -1,0 +1,40 @@
+model:
+  arch: blip2_llama_instruct_malmm
+
+  # Q-Former를 만들기 위한 필수 설정.
+  cross_attention_freq: 2
+  qformer_model_name_or_path: "bert-base-uncased"
+
+  # Vision Encoder (ViT) 설정
+  vit_precision: "fp16"
+  freeze_vit: True
+  image_size: 224
+
+  # LLM 설정
+  num_query_token: 32
+  llm_model: "llm/Llama-3.2-1B/Llama-3.2-1B"
+  freeze_llm: True
+
+  # 기타 설정
+  prompt: ""
+  max_txt_len: 128
+  max_output_txt_len: 256
+  memory_bank_length: 10
+  num_frames: 20
+  max_num_frames: 120
+
+
+preprocess:
+  vis_processor:
+    train:
+      name: "blip_image_train"  # "video"가 아닌 "image"용 전처리기
+      image_size: 224
+    eval:
+      name: "blip_image_eval"   # "video"가 아닌 "image"용 전처리기
+      image_size: 224
+
+  text_processor:
+    train:
+      name: "blip_caption"
+    eval:
+      name: "blip_caption"

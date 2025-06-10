@@ -219,7 +219,8 @@ class BaseTask:
                 }
             )
 
-            lr_scheduler.step(cur_epoch=inner_epoch, cur_step=i)
+            #lr_scheduler.step(cur_epoch=inner_epoch, cur_step=i)
+            lr_scheduler.step()
 
             with torch.cuda.amp.autocast(enabled=use_amp):
                 loss, loss_dict = self.train_step(model=model, samples=samples)

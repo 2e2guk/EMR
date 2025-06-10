@@ -1,0 +1,12 @@
+# lavis/configs/datasets/cc3m/cc3m_malmm.yaml
+
+datasets:
+  cc3m_malmm:
+    data_type: images
+    build_info:
+      annotations:
+        train:
+          storage: "cc3m/annotations/train.json"
+      images:
+        train:
+          storage: "cc3m/images"

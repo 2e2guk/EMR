@@ -6,6 +6,8 @@
 """
 
 from lavis.datasets.builders.base_dataset_builder import load_dataset_config
+from lavis.datasets.builders.cc3m_malmm_builder import CC3MMALMMDatasetBuilder
+
 from lavis.datasets.builders.caption_builder import (
     COCOCapBuilder,
     MSRVTTCapBuilder,
@@ -27,7 +29,7 @@ from lavis.datasets.builders.classification_builder import (
 )
 from lavis.datasets.builders.imagefolder_builder import ImageNetBuilder
 from lavis.datasets.builders.video_qa_builder import (
-    MSRVTTQABuilder, 
+    MSRVTTQABuilder,
     MSVDQABuilder,
     ActivityNetQABuilder,
 )
@@ -44,7 +46,6 @@ from lavis.datasets.builders.retrieval_builder import (
     Flickr30kBuilder,
 )
 from lavis.datasets.builders.dialogue_builder import AVSDDialBuilder
-
 
 from lavis.common.registry import registry
 
@@ -85,7 +86,6 @@ def load_dataset(name, cfg_path=None, vis_path=None, data_type=None):
     >>> dataset = load_dataset("coco_caption", cfg=None)
     >>> splits = dataset.keys()
     >>> print([len(dataset[split]) for split in splits])
-
     """
     if cfg_path is None:
         cfg = None
@@ -103,7 +103,6 @@ def load_dataset(name, cfg_path=None, vis_path=None, data_type=None):
 
     if vis_path is not None:
         if data_type is None:
-            # use default data type in the config
             data_type = builder.config.data_type
 
         assert (
