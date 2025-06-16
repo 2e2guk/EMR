@@ -151,5 +151,99 @@ If you find our code or our paper useful for your research, please **[★star]**
 We referenced the repo below for the code
 - [LAVIS](https://github.com/salesforce/LAVIS)
 
+## MA-LMM with ImageBind: Multimodal Memory & Dialogue System
+1. 프로젝트 개요 (Overview)
+본 프로젝트는 Vision, Audio 등 다양한 모달리티를 하나의 임베딩 공간에 결합하는 ImageBind 모델을 기반으로, 장기 기억 및 추론 능력을 갖춘 멀티모달 기억 시스템을 개발하는 것을 목표로 합니다. 
+
+기존 대형언어모델(LLM)의 한계인 장기 기억 부족과 추론 오류를 극복하기 위해, **MA-LMM(Memory Augmented Large Multimodal Model)**의 아키텍처를 차용하고, 여기에 ImageBind의 강력한 멀티모달 인코딩 능력을 결합했습니다. 
+
+
+최종적으로는, 대화의 순서와 맥락을 이해하고, <reminder> 태그와 같은 메커니즘을 통해 자기반성(Self-Reflection) 및 연쇄적 사고(Chain-of-Thought) 능력을 학습시켜, 복잡한 질문에도 논리적인 답변을 생성하는 에이전트를 구현하는 것을 목표로 합니다. 
+
+2. 최종 모델 아키텍처
+본 프로젝트에서 구현된 모델은 다음과 같은 독자적인 파이프라인 아키텍처를 가집니다.
+
+입력 인코더 (Frozen):
+
+Image Encoder: ImageBind-Huge의 Vision Encoder (출력: 1024차원) 
+Text Encoder: ImageBind-Huge의 Text Encoder (출력: 1024차원) 
+연결 모듈 (Trainable):
+
+FC Layer (imagebind_fc): ImageBind의 Vision, Text 임베딩을 결합한 2048차원 벡터를 받아, Q-Former가 처리할 수 있는 1024차원 벡터로 변환하는 nn.Linear(2048, 1024) 레이어.
+순서 임베딩 (turn_pe): Visual Dialog의 턴(turn) 순서 정보(0~10)를 학습하기 위한 nn.Embedding(11, 1024) 레이어.
+브릿지 모듈 (Frozen):
+
+Q-Former: Vision 특징과 언어(질문)를 연결하는 핵심 모듈. 입력으로 1024차원의 특징 벡터를 받도록 hidden_size를 1024로 설정. 
+언어 생성 모듈 (Frozen):
+
+Projection Layer (llm_proj): Q-Former의 출력(1024차원)을 LLM의 입력 차원(2048차원)으로 변환하는 nn.Linear(1024, 2048) 레이어.
+LLM: Llama-3.2-1B 모델을 bitsandbytes를 통해 4-bit 양자화하여 로드.
+3. 학습 파이프라인
+ImageBind와 MA-LMM의 라이브러리 의존성 충돌(PyTorch, timm 버전 등)을 해결하기 위해, 각자의 역할을 독립된 가상환경에서 수행하는 2단계 파이프라인 방식을 채택했습니다.
+
+1단계: 임베딩 사전 추출 (in imagebind_env)
+
+ImageBind 전용 가상환경에서, VisDial v1.0 데이터셋의 모든 이미지와 각 대화 턴의 질문 텍스트에 대한 Vision/Text 임베딩을 미리 추출하여 디스크에 .pt 파일로 저장했습니다.
+2단계: 모델 파인튜닝 (in malmm env)
+
+MA-LMM 학습용 가상환경에서, 사전 추출된 임베딩을 입력으로 받아 오직 imagebind_fc와 turn_pe 레이어만 학습시켰습니다.
+4. 설치 및 실행 가이드
+4.1 환경 설정
+
+이 프로젝트는 두 개의 분리된 Conda 가상환경이 필요합니다.
+
+imagebind_env 생성 (임베딩 추출용):
+
+Bash
+conda env create -f environment_imagebind.yml
+conda activate imagebind_env
+ malmm 생성 (모델 파인튜닝용):
+
+Bash
+conda env create -f environment_malmm.yml
+conda activate malmm
+ (참고: environment_*.yml 파일은 conda env export > [파일이름].yml 명령어로 생성할 수 있습니다.)
+
+4.2 데이터 준비 및 실행
+
+데이터셋 다운로드:
+
+lavis/datasets/visdial/ 폴더에 VisDial v1.0 어노테이션과 MS COCO 2014, VisualDialog_val2018 이미지를 다운로드하고 압축을 해제합니다.
+임베딩 추출:
+
+imagebind_env 환경을 활성화합니다.
+추출 스크립트를 실행하여 /home/leegw/visdial_imagebind_embeddings 경로에 임베딩을 생성합니다.
+Bash
+conda activate imagebind_env
+python extract_visdial_embeddings.py
+ 모델 파인튜닝:
+
+malmm 환경을 활성화합니다.
+MA-LMM 폴더에서 학습 명령어를 실행합니다.
+Bash
+conda activate malmm
+cd MA-LMM
+python -m lavis.tasks.run --cfg-path lavis/configs/tasks/finetune_visdial.yaml
+ 성능 평가:
+
+malmm 환경이 활성화된 상태에서, MA-LMM 폴더 안의 평가 스크립트를 실행합니다.
+--checkpoint 인자에 평가하려는 모델의 .pth 파일 경로를 지정합니다.
+Bash
+# 예시: 파인튜닝 후 모델 평가
+python evaluate.py \
+    --checkpoint "lavis/output/finetune_visdial/finetune_visdial/checkpoint_latest.pth" \
+    --llm_model_path "llm/llama-3.2-1B/Llama-3.2-1B"
+5. 실험 결과
+VisDial v1.0 검증 데이터셋에 대한 파인튜닝 전/후 모델의 BLEU-4 점수는 다음과 같습니다.
+
+모델 (Model)	BLEU-4 Score
+파인튜닝 전 (FC Layer만 학습)	14.96
+파인튜닝 후 (VisDial로 FC+PE 학습)	24.80
+분석: VisDial 데이터셋과 순서 임베딩을 이용한 파인튜닝을 통해 BLEU-4 점수가 약 65.8% 향상되었습니다. 이는 제안된 파인튜닝 방식이 모델의 대화 성능을 성공적으로 개선했음을 보여줍니다.
+
+6. 향후 과제 (Future Work)
+Retrieval 로직 구현: 보고서에 설계된 Recency, Frequency, Saliency 기반의 스코어링 함수를 구현하여, 대화 맥락에 맞는 과거 기억을 동적으로 검색하는 모듈을 추가.
+Self-Reflection 적용: 검색된 기억을 <reminder> 태그를 이용해 프롬프트에 주입하고, 모델이 연쇄적 사고(CoT)를 통해 더 논리적인 답변을 생성하도록 학습.
+종합 평가: 최종 모델에 대해 VisDial 뿐만 아니라 ScienceQA 등 다양한 벤치마크 데이터셋으로 정량/정성 평가를 수행.
 
 
