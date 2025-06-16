@@ -7,6 +7,7 @@
 
 from lavis.datasets.builders.base_dataset_builder import load_dataset_config
 from lavis.datasets.builders.cc3m_malmm_builder import CC3MMALMMDatasetBuilder
+from lavis.datasets.builders.visdial_builder import VisDialBuilder
 
 from lavis.datasets.builders.caption_builder import (
     COCOCapBuilder,
@@ -76,6 +77,7 @@ __all__ = [
     "LVUCLSBuilder",
     "COINCLSBuilder",
     "BreakfastCLSBuilder",
+    "VisDialBuilder",
 ]
 
 

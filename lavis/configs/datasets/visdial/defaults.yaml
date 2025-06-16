@@ -1,0 +1,14 @@
+datasets:
+  visdial_malmm: # visdial_builder.py에서 등록한 이름
+    data_type: images # 프레임워크 호환성을 위해 유지
+    build_info:
+      annotations:
+        train:
+          url: # 다운로드 URL은 사용하지 않으므로 비워둠
+          storage: '/home/leegw/dataset/visdial/visdial_1.0_train.json' # 어노테이션 파일 경로
+        val:
+          url:
+          storage: '/home/leegw/dataset/visdial/visdial_1.0_val.json'
+      images:
+        # 이 경로는 이제 이미지 폴더가 아닌, 사전 추출된 임베딩이 있는 폴더를 가리킵니다.
+        storage: '/home/leegw/visdial_imagebind_embeddings' # 임베딩 폴더 경로

@@ -13,10 +13,11 @@ import transformers
 from transformers import AutoTokenizer, LlamaForCausalLM, AutoConfig
 
 from lavis.common.registry import registry
-from lavis.models.blip2_models.blip2 import Blip2Base, disabled_train, memory_bank_compress
+from lavis.models.blip2_models.blip2 import Blip2Base, disabled_train, memory_bank_compress, LayerNorm
 
 from PIL import Image
 from torchvision import transforms
+
 
 #from LAVIS_backup.tests.models.test_pnp_vqa import device
 
@@ -30,6 +31,7 @@ class Blip2LlamaInstruct_MALMM(Blip2Base):
         "llama1b": "configs/models/blip2/blip2_instruct_llama1b.yaml",
     }
 
+    # imagebind 연동 init 함수.
     def __init__(
             self,
             vit_model="eva_clip_g",
@@ -50,43 +52,39 @@ class Blip2LlamaInstruct_MALMM(Blip2Base):
             num_frames=0,
             max_num_frames=120,
             cross_attention_freq=2,
-            #qformer_model_name_or_path="bert-base-uncased"
     ):
         super().__init__()
         transformers_version = version.parse(transformers.__version__)
         assert transformers_version >= version.parse("4.28"), "BLIP-2 Vicuna requires transformers>=4.28"
-        #from transformers import LlamaTokenizer
-        #self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        from lavis.models.blip2_models.modeling_llama import LlamaForCausalLM
+        # =============================================================
+        # [최종 수정] Vision Encoder -> FC Layer로 교체
+        # =============================================================
 
+        # 1. 토크나이저는 그대로 초기화.
         self.tokenizer = self.init_tokenizer(truncation_side="left")
 
-        self.visual_encoder, self.ln_vision = self.init_vision_encoder(
-            vit_model, img_size, drop_path_rate, use_grad_checkpoint, vit_precision
-        )
-        if freeze_vit:
-            for name, param in self.visual_encoder.named_parameters():
-                param.requires_grad = False
-            self.visual_encoder = self.visual_encoder.eval()
-            self.visual_encoder.train = disabled_train
-            logging.info("freeze vision encoder")
+        # 2. ImageBind의 vision(1024)과 text(1024) 임베딩을 합쳐(2048)
+        #    Q-Former가 받을 차원(1024)으로 변환하는 새로운 FC 레이어를 정의.
+        self.imagebind_fc = nn.Linear(1024 + 1024, 1024)
+        vision_width = 1024  # FC Layer의 출력 크기, Q-Former의 입력 크기가 된다.
 
-        # 추가
-        vision_width = self.visual_encoder.num_features
+        # 3. Layer Normalization은 FC Layer의 출력에 적용하기 위해 그대로 둔다.
+        self.ln_vision = LayerNorm(vision_width)
 
+        # 4. Q-Former를 초기화한다.
+        #    vision_width가 FC Layer의 출력 차원인 1024로 전달된다.
         self.Qformer, self.query_tokens = self.init_Qformer(
             num_query_token,
-            self.visual_encoder.num_features,
+            vision_width,
             cross_attention_freq=cross_attention_freq,
-            #qformer_model_name_or_path=qformer_model_name_or_path,
             memory_bank_length=memory_bank_length,
             num_frames=num_frames,
         )
 
-        # 추가
-        #self.Qformer.config.hidden_size = 2048
+        # =============================================================
 
+        # Q-Former의 후처리 부분은 기존과 동일.
         if not qformer_text_input:
             self.Qformer.bert.embeddings.word_embeddings = None
             self.Qformer.bert.embeddings.position_embeddings = None
@@ -97,12 +95,8 @@ class Blip2LlamaInstruct_MALMM(Blip2Base):
             self.Qformer.resize_token_embeddings(len(self.tokenizer))
         self.Qformer.cls = None
 
-        #self.llm_tokenizer = LlamaTokenizer.from_pretrained(llm_model, use_fast=True, truncation_side="left")
+        # LLM 로딩 부분. (4-bit 양자화 적용)
         self.llm_tokenizer = AutoTokenizer.from_pretrained(llm_model, use_fast=True, truncation_side="left")
-        # 추가
-        #config = AutoConfig.from_pretrained(llm_model)
-        #self.llm_model = LlamaForCausalLM(config)
-        #self.llm_model.init_weights()
 
         self.llm_model = LlamaForCausalLM.from_pretrained(
             llm_model,
@@ -110,30 +104,22 @@ class Blip2LlamaInstruct_MALMM(Blip2Base):
             load_in_4bit=True,
             device_map="auto"
         )
+
         self.llm_tokenizer.add_special_tokens({'pad_token': '[PAD]'})
         self.llm_tokenizer.add_special_tokens({'bos_token': '</s>'})
         self.llm_tokenizer.add_special_tokens({'eos_token': '</s>'})
         self.llm_tokenizer.add_special_tokens({'unk_token': '</s>'})
-        # self.llm_tokenizer.pad_token = self.llm_tokenizer.unk_token
 
         self.llm_model.resize_token_embeddings(len(self.llm_tokenizer))
 
-        # 추가
-        self.llm_proj = nn.Linear(
-            #self.Qformer.config.hidden_size,  # 현재 Qformer hidden size (예: 2048)
-            768,
-            self.llm_model.config.hidden_size  # LLaMA hidden size (예: 2048)
-        )
-
-        # self.eos_token_id = self.llm_tokenizer(
-        #     self.llm_tokenizer.eos_token, add_special_tokens=False
-        # ).input_ids[0]
+        # LLM 프로젝션 레이어도 Q-Former의 출력(768)을 기준으로 설정했던 것을 그대로 유지.
+        # (blip2.py에서 Q-Former의 hidden_size를 768로 설정했기 때문)
+        self.llm_proj = nn.Linear(self.Qformer.config.hidden_size, self.llm_model.config.hidden_size)
+        self.turn_pe = nn.Embedding(11, 1024)
 
         if freeze_llm:
             for name, param in self.llm_model.named_parameters():
                 param.requires_grad = False
-
-
 
         self.max_txt_len = max_txt_len
         self.max_output_txt_len = max_output_txt_len
@@ -143,22 +129,23 @@ class Blip2LlamaInstruct_MALMM(Blip2Base):
 
         self._lemmatizer = None
 
+        # MemoryBank 관련 설정도 그대로 유지합니다.
         self.qformer_text_input = qformer_text_input
         self.num_query_token = num_query_token
         self.memory_bank_length = memory_bank_length
         self.use_memory_bank = True if memory_bank_length > 0 else False
         self.num_frames = num_frames
         self.visual_memory_bank = None
-        self.image_pe = nn.Embedding(max_num_frames, 1408)
+        self.image_pe = nn.Embedding(max_num_frames, 1024)  # ImageBind 임베딩 차원에 맞춤
         nn.init.constant_(self.image_pe.weight, 0.0)
 
-        # Image preprocessing: BLIP-2와 동일한 normalizer
+        # 이 부분은 데이터셋에서 처리하므로 모델에서는 직접 사용하지 않을 수 있습니다.
         self.image_transform = transforms.Compose([
-            transforms.Resize((224, 224)),  # Q-Former가 ViT 기반이라면 224 기준
+            transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(
-                mean=[0.48145466, 0.4578275, 0.40821073],
-                std=[0.26862954, 0.26130258, 0.27577711],
+                mean=(0.48145466, 0.4578275, 0.40821073),
+                std=(0.26862954, 0.26130258, 0.27577711),
             )
         ])
 
@@ -187,175 +174,83 @@ class Blip2LlamaInstruct_MALMM(Blip2Base):
         return llm_tokens, input_part_targets_len
 
     def forward(self, samples):
-        # print('-----------------')
-        # print(samples["text_input"])
-        # print(samples["text_output"])
-        # print('-----------------')
+        # 1. 데이터셋에서 사전 추출된 임베딩과 턴 ID를 받습니다.
+        image_embedding = samples["image_embedding"].to(self.device)
+        text_embedding = samples["text_embedding"].to(self.device)
+        turn_ids = samples["turn_id"].to(self.device)
 
-        image = samples["image"]
-        # 만약 image가 list라면 텐서로 변환
-        if isinstance(image, list):
-            image = torch.stack(image, dim=0)
-        # For video data
-        is_video = False
-        if image.dim() == 5:
-            is_video = True
-            B, C, T, H, W = image.shape
-        else:
-            B, C, H, W = image.shape
-            T = 1
+        # 2. 내용 임베딩(Content Embedding) 생성
+        # vision, text 임베딩을 합치고 FC Layer를 통과시킵니다.
+        combined_embedding = torch.cat([image_embedding, text_embedding], dim=1)
+        content_embedding = self.imagebind_fc(combined_embedding)
 
-        if self.qformer_text_input:
-            if is_video:
-                text_input = [text for text in samples["text_input"] for _ in range(T)]
-            else:
-                text_input = samples["text_input"]
+        # 3. 순서 임베딩(Positional Embedding) 생성 및 결합
+        # 턴 ID를 이용해 순서 임베딩을 조회하고, 내용 임베딩에 더해줍니다.
+        turn_positional_embeddings = self.turn_pe(turn_ids)
+        final_embedding = content_embedding + turn_positional_embeddings
 
-            if self.use_memory_bank:
-                query_tokens = self.query_tokens.expand(B, -1, -1)  # [B, 32, C]
-                text_Qformer = self.tokenizer(
-                    samples["text_input"],  # [B]
-                    padding='longest',
-                    truncation=True,
-                    max_length=self.max_txt_len,
-                    return_tensors="pt",
-                ).to(image.device)
-                query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(image.device)  # [B, N]
-                Qformer_atts = torch.cat([query_atts, text_Qformer.attention_mask], dim=1)
-                for t in range(T):
-                    with self.maybe_autocast():
-                        image_embeds = self.ln_vision(self.visual_encoder(image[:, :, t, :, :]))  # [B, 256+1, 1408]
-                    N, C = image_embeds.shape[-2:]
-                    position_ids = torch.tensor([t]).long().to(image_embeds.device)  # [1]
-                    position_ids = position_ids.unsqueeze(0).expand(B, -1)  # [B, 1]
-                    image_embeds = image_embeds + self.image_pe(position_ids)  # [B, N, C]
-                    image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device)  # [B, N]
-                    image_embeds = image_embeds.unsqueeze(1)  # [B, 1, N, C]
+        # 4. Q-Former 입력 형식에 맞게 최종 임베딩을 가공합니다.
+        # (batch_size, 1024) -> (batch_size, 1, 1024)
+        embedding_for_qformer = final_embedding.unsqueeze(1)
+        image_embeds = self.ln_vision(embedding_for_qformer)
+        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(self.device)
 
-                    if t == 0:
-                        encoder_hidden_states = image_embeds  # [B, 1, N, C]
-                        self.size_constant = torch.ones(B, 1, N).to(image_embeds.device)  # [B, 1, N]
-                    else:
-                        encoder_hidden_states = torch.cat([self.visual_memory_bank, image_embeds],
-                                                          dim=1)  # [B, (t+1), N, C]
-
-                    query_output = self.Qformer.bert(
-                        text_Qformer.input_ids,
-                        attention_mask=Qformer_atts,
-                        query_embeds=query_tokens,
-                        encoder_hidden_states=encoder_hidden_states.view(B, -1, C),
-                        encoder_attention_mask=image_atts,
-                        return_dict=True,
-                    )
-
-                    # If it is the first frame, initialize the visual_memory_bank as the embedding of the first frame
-                    # If not, concatenate the visual_memory_bank with the current frame embedding and update the compression_size
-                    if t == 0:
-                        self.visual_memory_bank = image_embeds.detach()  # [B, 1, N, C]
-                        self.compression_size = self.size_constant  # [B, 1, N]
-                    else:
-                        self.visual_memory_bank = torch.cat([self.visual_memory_bank, image_embeds.detach()],
-                                                            dim=1)  # [B, t+1, N, C]
-                        self.compression_size = torch.cat([self.compression_size, self.size_constant],
-                                                          dim=1)  # [B, t+1, N]
-
-                    # If it is the last frame, delete the visual_memory_bank and compression_size
-                    # Else, if the current length of the visual_memory_bank exceeds the threshold, compress the visual_memory_bank
-                    if t == T - 1:
-                        del self.visual_memory_bank
-                        del self.compression_size
-                    elif self.visual_memory_bank.size(1) > self.memory_bank_length:
-                        self.visual_memory_bank, self.compression_size = memory_bank_compress(self.visual_memory_bank,
-                                                                                              self.compression_size)
-            else:
-                query_tokens = self.query_tokens.expand(B * T, -1, -1)
-                text_Qformer = self.tokenizer(
-                    text_input,
-                    padding='longest',
-                    truncation=True,
-                    max_length=self.max_txt_len,
-                    return_tensors="pt",
-                ).to(image.device)
-                query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(image.device)
-                Qformer_atts = torch.cat([query_atts, text_Qformer.attention_mask], dim=1)
-
-                if is_video:
-                    image = image.permute(0, 2, 1, 3, 4).reshape(B * T, C, H, W)
-                with self.maybe_autocast():
-                    image_embeds = self.ln_vision(self.visual_encoder(image))  # [B * T, 256+1, 1408]
-                image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device)
-                query_output = self.Qformer.bert(
-                    text_Qformer.input_ids,
-                    attention_mask=Qformer_atts,
-                    query_embeds=query_tokens,
-                    encoder_hidden_states=image_embeds,
-                    encoder_attention_mask=image_atts,
-                    return_dict=True,
-                )
-        else:
-            if is_video:
-                image = image.permute(0, 2, 1, 3, 4).reshape(B * T, C, H, W)
-            with self.maybe_autocast():
-                image_embeds = self.ln_vision(self.visual_encoder(image))  # [B * T, 256+1, 1408]
-            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device)
-            query_tokens = self.query_tokens.expand(B * T, -1, -1)
-            query_output = self.Qformer.bert(
-                query_embeds=query_tokens,
-                encoder_hidden_states=image_embeds,
-                encoder_attention_mask=image_atts,
-                return_dict=True,
-            )
-
-        inputs_llm = self.llm_proj(query_output.last_hidden_state[:, :query_tokens.size(1), :])
-        if is_video:
-            inputs_llm = inputs_llm.reshape(B, -1, inputs_llm.shape[-1])
-        atts_llm = torch.ones(inputs_llm.size()[:-1], dtype=torch.long).to(image.device)
-
-        self.llm_tokenizer.padding_side = "right"
-        self.llm_tokenizer.truncation_side = 'left'
-        text_input_tokens = self.llm_tokenizer(
-            samples['text_input'],
-            return_tensors="pt",
-            padding="longest",
+        # 5. Q-Former에 텍스트(질문)와 최종 임베딩 특징을 전달합니다.
+        query_tokens = self.query_tokens.expand(image_embeds.shape[0], -1, -1)
+        text_Qformer = self.tokenizer(
+            samples["text_input"],
+            padding='longest',
             truncation=True,
             max_length=self.max_txt_len,
-        ).to(image.device)
-
-        self.llm_tokenizer.truncation_side = 'right'
-        text_output_tokens = self.llm_tokenizer(
-            [t + self.llm_tokenizer.eos_token for t in samples['text_output']],
             return_tensors="pt",
-            padding="longest",
-            truncation=True,
-            max_length=self.max_output_txt_len,
-        ).to(image.device)
+        ).to(image_embeds.device)
+        query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(image_embeds.device)
+        Qformer_atts = torch.cat([query_atts, text_Qformer.attention_mask], dim=1)
 
-        llm_tokens, input_part_targets_len = self.concat_text_input_output(
-            text_input_tokens.input_ids,
-            text_input_tokens.attention_mask,
-            text_output_tokens.input_ids,
-            text_output_tokens.attention_mask,
+        query_output = self.Qformer.bert(
+            text_Qformer.input_ids,
+            attention_mask=Qformer_atts,
+            query_embeds=query_tokens,
+            encoder_hidden_states=image_embeds,
+            encoder_attention_mask=image_atts,
+            return_dict=True,
         )
 
-        # do not apply loss to the padding
+        # 6. Q-Former 출력을 LLM에 전달하기 위해 프로젝션합니다.
+        inputs_llm = self.llm_proj(query_output.last_hidden_state)
+        atts_llm = torch.ones(inputs_llm.size()[:-1], dtype=torch.long).to(image_embeds.device)
+
+        # 7. LLM 학습을 위한 입력 및 레이블을 준비합니다.
+        self.llm_tokenizer.padding_side = "right"
+        text_input_tokens = self.llm_tokenizer(
+            samples['text_input'], return_tensors="pt", padding="longest",
+            truncation=True, max_length=self.max_txt_len
+        ).to(image_embeds.device)
+        text_output_tokens = self.llm_tokenizer(
+            [t + self.llm_tokenizer.eos_token for t in samples['text_output']],
+            return_tensors="pt", padding="longest",
+            truncation=True, max_length=self.max_output_txt_len
+        ).to(image_embeds.device)
+
+        llm_tokens, input_part_targets_len = self.concat_text_input_output(
+            text_input_tokens.input_ids, text_input_tokens.attention_mask,
+            text_output_tokens.input_ids, text_output_tokens.attention_mask
+        )
+
         targets = llm_tokens['input_ids'].masked_fill(
             llm_tokens['input_ids'] == self.llm_tokenizer.pad_token_id, -100
         )
-
-        # do not apply loss to the text input (i.e., instruction)
         for i, l in enumerate(input_part_targets_len):
             targets[i][:l] = -100
 
-        # do not apply loss to the query tokens
-        empty_targets = (
-            torch.ones(atts_llm.size(), dtype=torch.long).to(image.device).fill_(-100)
-        )
+        empty_targets = torch.ones(atts_llm.size(), dtype=torch.long).to(image_embeds.device).fill_(-100)
         targets = torch.cat([empty_targets, targets], dim=1)
 
         inputs_embeds = self.llm_model.get_input_embeddings()(llm_tokens['input_ids'])
         inputs_embeds = torch.cat([inputs_llm, inputs_embeds], dim=1)
         attention_mask = torch.cat([atts_llm, llm_tokens['attention_mask']], dim=1)
 
+        # 8. 최종 LLM 순전파 및 손실 계산
         with self.maybe_autocast():
             outputs = self.llm_model(
                 inputs_embeds=inputs_embeds,
@@ -363,9 +258,7 @@ class Blip2LlamaInstruct_MALMM(Blip2Base):
                 return_dict=True,
                 labels=targets,
             )
-
         loss = outputs.loss
-
         return {"loss": loss}
 
     @torch.no_grad()
@@ -374,159 +267,61 @@ class Blip2LlamaInstruct_MALMM(Blip2Base):
             samples,
             use_nucleus_sampling=False,
             num_beams=5,
-            max_length=256,
-            min_length=1,
+            max_new_tokens=30,  # max_length, min_length 대신 사용
             top_p=0.9,
-            repetition_penalty=1.5,
-            length_penalty=1,
+            repetition_penalty=1.0,
+            length_penalty=1.0,
             num_captions=1,
             temperature=1,
     ):
         self.llm_tokenizer.padding_side = "left"
 
-        if "prompt" in samples.keys():
-            prompt = samples["prompt"]
-        else:
-            prompt = self.prompt
+        # 1. 임베딩 처리 로직
+        image_embedding = samples["image_embedding"].to(self.device)
+        text_embedding = samples["text_embedding"].to(self.device)
+        turn_ids = samples["turn_id"].to(self.device)
 
-        image = samples["image"]
-        # For video data
-        is_video = False
-        if image.dim() == 5:
-            is_video = True
-            B, C, T, H, W = image.shape
+        combined_embedding = torch.cat([image_embedding, text_embedding], dim=1)
+        content_embedding = self.imagebind_fc(combined_embedding)
+        turn_positional_embeddings = self.turn_pe(turn_ids)
+        final_embedding = content_embedding + turn_positional_embeddings
+        visual_embedding_for_qformer = final_embedding.unsqueeze(1)
+        image_embeds = self.ln_vision(visual_embedding_for_qformer)
 
-        if isinstance(image, list):
-            if isinstance(image[0], str):  # 이미지 경로(str) 리스트인 경우
-                image = torch.stack([
-                    self.image_transform(Image.open(p).convert("RGB")) for p in image
-                ]).to(self.device)
-            else:  # 텐서 리스트인 경우
-                image = torch.stack(image, dim=0)
+        # 2. Q-Former 및 LLM 입력 준비
+        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(self.device)
+        query_tokens = self.query_tokens.expand(image_embeds.shape[0], -1, -1)
 
-        # For TextCaps
-        if "ocr_tokens" in samples.keys() and "{}" in prompt[0]:
-            prompt = [p.format(', '.join(samples['ocr_tokens'][i][:30])) for i, p in enumerate(prompt)]
+        text_Qformer = self.tokenizer(
+            samples["text_input"], padding='longest', truncation=True,
+            max_length=self.max_txt_len, return_tensors="pt"
+        ).to(image_embeds.device)
 
-        assert self.qformer_text_input == True
-        if self.qformer_text_input:
-            # remove ocr tokens in q_former (for eval textvqa)
-            # qformer_prompt = prompt
-            # qformer_prompt = ['Question: ' + qp.split(' Question: ')[1] for qp in qformer_prompt]
+        query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(image_embeds.device)
+        Qformer_atts = torch.cat([query_atts, text_Qformer.attention_mask], dim=1)
 
-            if is_video:
-                text_input = []
-                for text in prompt:
-                    text_input.extend([text] * T)
-            else:
-                text_input = prompt
+        query_output = self.Qformer.bert(
+            text_Qformer.input_ids,
+            attention_mask=Qformer_atts,
+            query_embeds=query_tokens,
+            encoder_hidden_states=image_embeds,
+            encoder_attention_mask=image_atts,
+            return_dict=True,
+        )
 
-            if self.use_memory_bank:
-                query_tokens = self.query_tokens.expand(B, -1, -1)  # [B, 32, C]
-                text_Qformer = self.tokenizer(
-                    prompt,  # [B]
-                    padding='longest',
-                    truncation=True,
-                    max_length=self.max_txt_len,
-                    return_tensors="pt",
-                ).to(image.device)
-                query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(image.device)  # [B, 32]
-                Qformer_atts = torch.cat([query_atts, text_Qformer.attention_mask], dim=1)
-
-                for t in range(T):
-                    with self.maybe_autocast():
-                        image_embeds = self.ln_vision(
-                            self.visual_encoder(image[:, :, t, :, :])).detach()  # [B, 256+1, 1408]
-                    N, C = image_embeds.shape[-2:]
-                    position_ids = torch.tensor([t]).long().to(image_embeds.device)  # [1]
-                    position_ids = position_ids.unsqueeze(0).expand(B, -1)  # [B, 1]
-                    image_pe = self.image_pe(position_ids)  # [B, 1, C]
-                    image_embeds = image_embeds + image_pe  # [B, N, C]
-                    image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device)  # [B, N]
-                    image_embeds = image_embeds.unsqueeze(1)  # [B, 1, N, C]
-
-                    if t == 0:
-                        self.visual_memory_bank = image_embeds  # [B, 1, N, C]
-                        self.size_constant = torch.ones(B, 1, N).to(image_embeds.device)  # [B, 1, N]
-                        self.compression_size = self.size_constant  # [B, 1, N]
-                    else:
-                        self.visual_memory_bank = torch.cat([self.visual_memory_bank, image_embeds],
-                                                            dim=1)  # [B, t+1, N, C]
-                        self.compression_size = torch.cat([self.compression_size, self.size_constant],
-                                                          dim=1)  # [B, t+1, N]
-
-                    query_output = self.Qformer.bert(
-                        text_Qformer.input_ids,
-                        attention_mask=Qformer_atts,
-                        query_embeds=query_tokens,
-                        encoder_hidden_states=self.visual_memory_bank.view(B, -1, C),
-                        encoder_attention_mask=image_atts,
-                        return_dict=True,
-                    )
-                    last_hidden_state = query_output.last_hidden_state
-
-                    if t == T - 1:
-                        del self.visual_memory_bank
-                        del self.compression_size
-                    elif self.visual_memory_bank.size(1) > self.memory_bank_length:
-                        self.visual_memory_bank, self.compression_size = memory_bank_compress(self.visual_memory_bank,
-                                                                                              self.compression_size)
-
-            else:
-                query_tokens = self.query_tokens.expand(B * T, -1, -1)
-                text_Qformer = self.tokenizer(
-                    text_input,  # [B*T]
-                    padding='longest',
-                    truncation=True,
-                    max_length=self.max_txt_len,
-                    return_tensors="pt",
-                ).to(image.device)
-                query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(image.device)
-                Qformer_atts = torch.cat([query_atts, text_Qformer.attention_mask], dim=1)
-
-                if is_video:
-                    image = image.permute(0, 2, 1, 3, 4).reshape(B * T, C, H, W)
-                with self.maybe_autocast():
-                    image_embeds = self.ln_vision(self.visual_encoder(image))  # [B * T, 256+1, 1408]
-                image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device)
-                query_output = self.Qformer.bert(
-                    text_Qformer.input_ids,
-                    attention_mask=Qformer_atts,
-                    query_embeds=query_tokens,
-                    encoder_hidden_states=image_embeds,
-                    encoder_attention_mask=image_atts,
-                    return_dict=True,
-                )
-        else:
-            if is_video:
-                image = image.permute(0, 2, 1, 3, 4).reshape(B * T, C, H, W)
-            with self.maybe_autocast():
-                image_embeds = self.ln_vision(self.visual_encoder(image))  # [B * T, 256+1, 1408]
-            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device)
-            query_tokens = self.query_tokens.expand(B * T, -1, -1)
-            query_output = self.Qformer.bert(
-                query_embeds=query_tokens,
-                encoder_hidden_states=image_embeds,
-                encoder_attention_mask=image_atts,
-                return_dict=True,
-            )
-
-        inputs_llm = self.llm_proj(query_output.last_hidden_state[:, :query_tokens.size(1), :])
-        if is_video:
-            inputs_llm = inputs_llm.reshape(B, -1, inputs_llm.shape[-1])
-        atts_llm = torch.ones(inputs_llm.size()[:-1], dtype=torch.long).to(image.device)
+        inputs_llm = self.llm_proj(query_output.last_hidden_state)
+        atts_llm = torch.ones(inputs_llm.size()[:-1], dtype=torch.long).to(self.device)
 
         llm_tokens = self.llm_tokenizer(
-            prompt,
-            padding="longest",
-            return_tensors="pt"
-        ).to(image.device)
+            samples["text_input"], padding="longest", return_tensors="pt"
+        ).to(self.device)
 
+        attention_mask = torch.cat([atts_llm, llm_tokens.attention_mask], dim=1)
+        inputs_embeds = self.llm_model.get_input_embeddings()(llm_tokens.input_ids)
+        inputs_embeds = torch.cat([inputs_llm, inputs_embeds], dim=1)
+
+        # 3. [핵심] LLM 답변 생성 시 max_new_tokens 사용
         with self.maybe_autocast():
-            inputs_embeds = self.llm_model.get_input_embeddings()(llm_tokens.input_ids)
-            inputs_embeds = torch.cat([inputs_llm, inputs_embeds], dim=1)
-            attention_mask = torch.cat([atts_llm, llm_tokens.attention_mask], dim=1)
-
             outputs = self.llm_model.generate(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
@@ -534,15 +329,12 @@ class Blip2LlamaInstruct_MALMM(Blip2Base):
                 top_p=top_p,
                 temperature=temperature,
                 num_beams=num_beams,
-                max_length=max_length,
-                min_length=min_length,
-                # eos_token_id=self.eos_token_id,
+                max_new_tokens=max_new_tokens,  # <--- 수정된 인자 전달
                 repetition_penalty=repetition_penalty,
                 length_penalty=length_penalty,
                 num_return_sequences=num_captions,
             )
 
-        outputs[outputs < 2] = 2  # convert output id -1/0/1 to 2 (eos_token_id)
         output_text = self.llm_tokenizer.batch_decode(outputs, skip_special_tokens=True)
         output_text = [text.strip() for text in output_text]
 
@@ -860,84 +652,54 @@ class Blip2LlamaInstruct_MALMM(Blip2Base):
 
         return self._lemmatizer
 
+    # 추가
+    def get_optimizer_params(self, weight_decay, lr_scale=1):
+        # self.imagebind_fc 의 parameter만 반환
+        params_to_train = list(self.imagebind_fc.parameters()) + list(self.turn_pe.parameters())
+        return params_to_train
+
     @classmethod
     def from_config(cls, cfg):
-        # 추가
+        # 1. 설정 값들을 딕셔너리로 먼저 추출합니다.
         model_cfg = cfg.get("model", {})
-        vit_model = model_cfg.get("vit_model", "eva_clip_g")
-        img_size = model_cfg.get("image_size", 224)
-        num_query_token = model_cfg.get("num_query_token", 32)
-        llm_model = model_cfg.get("llm_model", "llm/llama-3.2-1B/Llama-3.2-1B")
-        freeze_llm = model_cfg.get("freeze_llm", True)
-        memory_bank_length = model_cfg.get("memory_bank_length", 0)
-        num_frames = model_cfg.get("num_frames", 0)
-        max_num_frames = model_cfg.get("max_num_frames", 120)
+        init_params = {
+            "vit_model": model_cfg.get("vit_model", "eva_clip_g"),
+            "img_size": model_cfg.get("image_size", 224),
+            "drop_path_rate": model_cfg.get("drop_path_rate", 0),
+            "use_grad_checkpoint": model_cfg.get("use_grad_checkpoint", False),
+            "vit_precision": model_cfg.get("vit_precision", "fp16"),
+            "freeze_vit": model_cfg.get("freeze_vit", True),
+            "num_query_token": model_cfg.get("num_query_token", 32),
+            "llm_model": model_cfg.get("llm_model"),
+            "freeze_llm": model_cfg.get("freeze_llm", True),
+            "prompt": model_cfg.get("prompt", ""),
+            "max_txt_len": model_cfg.get("max_txt_len", 128),
+            "max_output_txt_len": model_cfg.get("max_output_txt_len", 256),
+            "apply_lemmatizer": cfg.get("apply_lemmatizer", False),
+            "qformer_text_input": cfg.get("qformer_text_input", True),
+            "cross_attention_freq": model_cfg.get("cross_attention_freq", 2),
+        }
 
-        cross_attention_freq = model_cfg.get("cross_attention_freq", 2)
-        #qformer_model_name_or_path = model_cfg.get("qformer_model_name_or_path", "bert-base-uncased")
+        # 2. 추출한 파라미터로 모델 인스턴스를 생성합니다.
+        model = cls(**init_params)
 
-
-        drop_path_rate = model_cfg.get("drop_path_rate", 0)
-        use_grad_checkpoint = model_cfg.get("use_grad_checkpoint", False)
-        vit_precision = model_cfg.get("vit_precision", "fp16")
-        freeze_vit = model_cfg.get("freeze_vit", True)
-
-        prompt = model_cfg.get("prompt", "")
-        max_txt_len = model_cfg.get("max_txt_len", 128)
-        max_output_txt_len = model_cfg.get("max_output_txt_len", 256)
-
-        apply_lemmatizer = cfg.get("apply_lemmatizer", False)
-
-        qformer_text_input = cfg.get("qformer_text_input", True)
-
-        model = cls(
-            vit_model=vit_model,
-            img_size=img_size,
-            drop_path_rate=drop_path_rate,
-            use_grad_checkpoint=use_grad_checkpoint,
-            vit_precision=vit_precision,
-            freeze_vit=freeze_vit,
-            num_query_token=num_query_token,
-            llm_model=llm_model,
-            freeze_llm=freeze_llm,
-            prompt=prompt,
-            max_txt_len=max_txt_len,
-            max_output_txt_len=max_output_txt_len,
-            apply_lemmatizer=apply_lemmatizer,
-            qformer_text_input=qformer_text_input,
-            memory_bank_length=memory_bank_length,
-            num_frames=num_frames,
-            max_num_frames=max_num_frames,
-            cross_attention_freq=cross_attention_freq,
-            #qformer_model_name_or_path=qformer_model_name_or_path,
-        )
-
+        # 3. Gradient Checkpointing을 활성화합니다.
         model.llm_model.gradient_checkpointing_enable()
 
-        # if qformer_text_input:
-        #     # Hard-coded to load from BLIP-2 stage-1 pre-trained model (not ideal)
-        #     model.load_from_pretrained(
-        #         url_or_filename="https://storage.googleapis.com/sfr-vision-language-research/LAVIS/models/BLIP2/blip2_pretrained.pth"
-        #     )
+        # 4. 'finetuned' 경로의 체크포인트를 직접 불러옵니다.
+        ckpt_path = model_cfg.get("finetuned", "")
+        if ckpt_path:
+            print(f"Loading finetuned checkpoint from: {ckpt_path}")
+            # PyTorch 2.6+ 호환성을 위해 weights_only=False 추가
+            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
-        #model.load_checkpoint_from_config(cfg)
+            # 체크포인트는 'model' 키 안에 가중치를 가지고 있습니다.
+            #state_dict = ckpt.get('model', ckpt)
+            state_dict = ckpt.get('model')
 
-        # 추가
-        #model.llm_proj = nn.Linear(768, 2048)
-        #nn.init.xavier_uniform_(model.llm_proj.weight)
-        #model.llm_proj.bias.data.zero_()
-
-        ckpt_path = cfg.get("model", {}).get("pretrained", "")
-        if ckpt_path and ckpt_path != "":
-            import torch
-            print(f"Loading checkpoint from: {ckpt_path}")
-            ckpt = torch.load(ckpt_path, map_location="cpu")
-
-            for k in list(ckpt["model"].keys()):
-                if "llm_proj" in k:
-                    print(f" Removing {k} from checkpoint")
-                    del ckpt["model"][k]
-
-            model.load_state_dict(ckpt["model"], strict=False)
+            # strict=False로 설정하여, 현재 모델에 없는 키(예: 옛날 visual_encoder)는 무시하고
+            # 일치하는 키(예: 우리가 학습시킨 imagebind_fc)의 가중치만 선택적으로 불러옵니다.
+            msg = model.load_state_dict(state_dict, strict=False)
+            print(f"Checkpoint loading message: {msg}")
 
         return model

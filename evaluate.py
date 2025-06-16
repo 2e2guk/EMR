@@ -1,92 +1,82 @@
-"""
- Copyright (c) 2022, salesforce.com, inc.
- All rights reserved.
- SPDX-License-Identifier: BSD-3-Clause
- For full license text, see the LICENSE file in the repo root or https://opensource.org/licenses/BSD-3-Clause
-"""
-
-import argparse
-import random
-
-import numpy as np
 import torch
-import torch.backends.cudnn as cudnn
+import argparse
+from tqdm import tqdm
+import nltk
+from nltk.translate.bleu_score import corpus_bleu
 
-import lavis.tasks as tasks
-from lavis.common.config import Config
-from lavis.common.dist_utils import get_rank, init_distributed_mode
-from lavis.common.logger import setup_logger
-from lavis.common.optims import (
-    LinearWarmupCosineLRScheduler,
-    LinearWarmupStepLRScheduler,
-)
-from lavis.common.utils import now
-
-# imports modules for registration
-from lavis.datasets.builders import *
-from lavis.models import *
-from lavis.processors import *
-from lavis.runners.runner_base import RunnerBase
-from lavis.tasks import *
+# 우리가 직접 만든 클래스들을 import
+from lavis.models.blip2_models.blip2_llama_instruct_malmm import Blip2LlamaInstruct_MALMM
+from lavis.datasets.datasets.visdial_dataset import VisDialDataset
+from lavis.processors.blip_processors import BlipCaptionProcessor
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Training")
-
-    parser.add_argument("--cfg-path", required=True, help="path to configuration file.")
-    parser.add_argument(
-        "--options",
-        nargs="+",
-        help="override some settings in the used config, the key-value pair "
-        "in xxx=yyy format will be merged into config file (deprecate), "
-        "change to --cfg-options instead.",
+def evaluate(model, dataset, device, batch_size=16, max_new_tokens=30 , num_beams=5):
+    data_loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=4,
+        collate_fn=dataset.collater,
     )
 
-    args = parser.parse_args()
-    # if 'LOCAL_RANK' not in os.environ:
-    #     os.environ['LOCAL_RANK'] = str(args.local_rank)
+    model.eval()
+    model.to(device)
 
-    return args
+    references = []
+    candidates = []
 
+    print("Starting evaluation...")
+    with torch.no_grad():
+        for samples in tqdm(data_loader, desc="Evaluating"):
+            samples["image_embedding"] = samples["image_embedding"].to(device)
+            samples["text_embedding"] = samples["text_embedding"].to(device)
+            samples["turn_id"] = samples["turn_id"].to(device)
 
-def setup_seeds(config):
-    seed = config.run_cfg.seed + get_rank()
+            # [핵심 수정] generate 함수에 길이 관련 인자를 직접 전달합니다.
+            generated_captions = model.generate(
+                samples,
+                num_beams=num_beams,
+                max_new_tokens=max_new_tokens,
+            )
 
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+            # ... (이하 코드는 동일)
+            ground_truth_captions = samples["text_output"]
+            candidates.extend(generated_captions)
+            references.extend(ground_truth_captions)
 
-    cudnn.benchmark = False
-    cudnn.deterministic = True
+    references_tokenized = [[ref.split()] for ref in references]
+    candidates_tokenized = [cand.split() for cand in candidates]
 
+    bleu4 = corpus_bleu(references_tokenized, candidates_tokenized, weights=(0.25, 0.25, 0.25, 0.25))
 
-def main():
-    # allow auto-dl completes on main process without timeout when using NCCL backend.
-    # os.environ["NCCL_BLOCKING_WAIT"] = "1"
-
-    # set before init_distributed_mode() to ensure the same job_id shared across all ranks.
-    job_id = now()
-
-    cfg = Config(parse_args())
-
-    init_distributed_mode(cfg.run_cfg)
-
-    setup_seeds(cfg)
-
-    # set after init_distributed_mode() to only log on master.
-    setup_logger()
-
-    cfg.pretty_print()
-
-    task = tasks.setup_task(cfg)
-    datasets = task.build_datasets(cfg)
-    model = task.build_model(cfg)
-
-    runner = RunnerBase(
-        cfg=cfg, job_id=job_id, task=task, model=model, datasets=datasets
-    )
-    runner.evaluate(skip_reload=True)
+    print("\n--- Evaluation Complete ---")
+    print(f"Total samples evaluated: {len(candidates)}")
+    print(f"BLEU-4 Score: {bleu4 * 100:.2f}")
 
 
 if __name__ == "__main__":
-    main()
+    # ... (parser 및 모델 로딩 부분은 동일) ...
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", required=True, help="Path to the model checkpoint file.")
+    parser.add_argument("--llm_model_path", required=True, help="Path to the base LLM model.")
+    args = parser.parse_args()
+
+    print("Initializing model architecture...")
+    model = Blip2LlamaInstruct_MALMM(
+        llm_model=args.llm_model_path
+    )
+
+    print(f"Loading checkpoint weights from: {args.checkpoint}")
+    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    model.load_state_dict(checkpoint['model'], strict=False)
+
+    print("Loading VisDial validation dataset...")
+    text_processor = BlipCaptionProcessor()
+    val_dataset = VisDialDataset(
+        vis_processor=None,
+        text_processor=text_processor,
+        vis_root="/home/leegw/visdial_imagebind_embeddings",
+        ann_paths=["/home/leegw/dataset/visdial/visdial_1.0_val.json"]
+    )
+
+
+    evaluate(model, val_dataset, device="cuda", max_new_tokens=30, num_beams=5)

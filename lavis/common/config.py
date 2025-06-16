@@ -58,7 +58,7 @@ class Config:
         model = config.get("model", None)
         assert model is not None, "Missing model configuration file."
 
-        model.arch += f'_malmm'
+        #model.arch += f'_malmm'
         model_cls = registry.get_model_class(model.arch)
         assert model_cls is not None, f"Model '{model.arch}' has not been registered."
 
@@ -83,7 +83,7 @@ class Config:
 
     @staticmethod
     def build_runner_config(config):
-        return {"run": config.run}
+        return {"run": config.run_cfg} # config.run -> config.run_cfg ?
 
     @staticmethod
     def build_dataset_config(config):

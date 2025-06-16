@@ -1,24 +1,21 @@
-# Python/Conda 환경
+# Python/Conda 가상환경
 __pycache__/
 *.pyc
 *.egg-info/
 /malmm/
+/imagebind_env/
 
-# Datasets, Outputs, & Large Files
-# 프로젝트 내 모든 하위 폴더에 적용되도록 이름만으로도 무시
-data/
-output/
-llm/
-conceptual-captions/
-
-# 우리가 확인했던 특정 경로도 명시적으로 추가
-lavis/datasets/
-lavis/output/
-
-# Backup folders
-LAVIS_backup/
-
-# IDE/System files
+# IDE 및 시스템 파일
 .idea/
 .vscode/
 .DS_Store
+
+# 대용량 결과물 및 모델 파일 (매우 중요!)
+output/
+output_backup/
+output_old_model_backup/
+llm/
+
+# 임시 백업 폴더
+LAVIS_backup/
+lavis/conceptual-captions/

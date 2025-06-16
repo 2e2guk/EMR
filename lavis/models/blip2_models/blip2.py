@@ -205,7 +205,7 @@ class Blip2Base(BaseModel):
     @classmethod
     def init_Qformer(cls, num_query_token, vision_width, cross_attention_freq=2, memory_bank_length=0, num_frames=0):
         encoder_config = BertConfig.from_pretrained("bert-base-uncased")
-        encoder_config.hidden_size = 768
+        encoder_config.hidden_size = 768 # 1024 -> 파인튜닝 이전 결과 뽑으면 다시 1024로 돌려놓기
         #encoder_config.hidden_size = 2048 -> OOM error 발생
         # attention head 16개
         encoder_config.num_attention_heads = 16

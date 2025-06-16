@@ -1,0 +1,73 @@
+# fine-tuning을 위한 설정 파일
+
+model:
+  # 수정한 모델 아키텍처
+  arch: blip2_llama_instruct_malmm
+
+  # 이전 체크포인트 로딩.
+  #load_finetuned: true
+  #finetuned: "/home/leegw/EMR_2/MA-LMM/lavis/output/vlp_cc3m/vlp_cc3m/checkpoint_latest.pth" # 사용자님이 알려주신 경로
+
+  # LLM 모델의 경로 지정.
+  llm_model: "llm/llama-3.2-1B/Llama-3.2-1B"
+
+datasets:
+  # 우리가 새로 만든 VisDial 데이터셋 빌더를 사용.
+  visdial_malmm:
+    data_type: images # 빌더가 데이터 종류를 인식하도록 명시
+
+    # 데이터셋의 경로 정보를 담고 있는 build_info 섹션
+    build_info:
+      annotations:
+        train:
+          storage: '/home/leegw/dataset/visdial/visdial_1.0_train.json'
+        val:
+          storage: '/home/leegw/dataset/visdial/visdial_1.0_val.json'
+      images:
+        # 이 경로는 사전 추출된 임베딩이 있는 폴더를 지정해야 합니다.
+        storage: '/home/leegw/visdial_imagebind_embeddings'
+
+    # 전처리기 설정
+    vis_processor:
+      train:
+        name: "blip_image_eval" # 임베딩을 사용하므로 사실상 사용되지 않음
+    text_processor:
+      train:
+        name: "blip_caption"
+
+run_cfg:
+  task: image_text_pretrain # 기존 학습 태스크를 재사용
+  name: finetune_visdial
+  save_dir: "output/finetune_visdial"
+  output_dir: "output/finetune_visdial"
+  log_dir: "output/finetune_visdial/logs"
+  num_beams: 1
+
+  # --- 메모리 및 하이퍼파라미터 설정 ---.
+  batch_size_train: 8
+  batch_size_eval: 16
+  accum_grad_iters: 4
+  num_workers: 4
+
+  # 파인튜닝용 하이퍼파라미터
+  resume_ckpt_path: null
+  max_epoch: 3
+  init_lr: 1e-5
+  min_lr: 1e-6
+
+  # --- 기타 실행 설정 ---
+  seed: 42
+  amp: true
+  evaluate: false # 매 에폭마다 검증 성능을 평가
+  save_ckpt_freq: 1 # 매 에폭마다 체크포인트 저장
+
+  lr_sched: "cosine"
+  optimizer: adamw
+  weight_decay: 0.05
+  max_grad_norm: 5.0
+
+  train_splits: ["train"]
+  valid_splits: ["val"]
+
+  device: "cuda"
+  distributed: false
