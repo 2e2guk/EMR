@@ -208,25 +208,27 @@ conda activate malmm
 
 ##### 4.2 데이터 준비 및 실행
 
-	•	데이터셋 다운로드
+•	데이터셋 다운로드
 lavis/datasets/visdial/ 폴더에 VisDial v1.0 어노테이션과 MS COCO 2014, VisualDialog_val2018 이미지를 다운로드한 후 압축 해제
-	•	임베딩 추출
+•	임베딩 추출
 ```bash
 conda activate imagebind_env
 python extract_visdial_embeddings.py
 ```
-	•	모델 파인튜닝
+•	모델 파인튜닝
 ```bash
 conda activate malmm
 cd MA-LMM
 python -m lavis.tasks.run –cfg-path lavis/configs/tasks/finetune_visdial.yaml
 ```
-	•	성능 평가
+•	성능 평가
 ```bash
 python evaluate.py \
 –checkpoint “lavis/output/finetune_visdial/finetune_visdial/checkpoint_latest.pth” \
 –llm_model_path “llm/llama-3.2-1B/Llama-3.2-1B”
 ```
+-- checkpoint 에, 성능을 평가하고자 체크포인트 경로를 적절히 지정합니다. 
+
 #### 5. 실험 결과
 
 모델	BLEU-4 Score
