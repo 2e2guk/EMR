@@ -228,6 +228,10 @@ python evaluate.py \
 –llm_model_path “llm/llama-3.2-1B/Llama-3.2-1B”
 ```
 -- checkpoint 에, 성능을 평가하고자 체크포인트 경로를 적절히 지정합니다. 
+! 주의할 점은, cc3m dataset의 경우 lavis/models/../blip2.py의, 208 line의 
+```bash
+encoder_config.hidden_size = 1024 # 768 -> 파인튜닝 이전 결과를 위해서, 768으로 돌려야 함.
+```
 
 #### 5. 실험 결과
 
